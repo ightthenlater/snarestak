@@ -1,0 +1,73 @@
+name: Build SnareStack for Mac
+
+on:
+  push:
+    tags: ["v*"]
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  mac:
+    name: macOS (universal AU + VST3)
+    runs-on: macos-latest
+    permissions:
+      contents: write   # only used to attach files to a tagged release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DSNARESTACK_BUILD_HOST_TEST=ON
+
+      - name: Build (also installs into ~/Library/Audio/Plug-Ins on the build machine)
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Unit + processor tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Validate the Audio Unit with auval (what Logic Pro runs)
+        run: |
+          for b in ~/Library/Audio/Plug-Ins/Components/SnareStack.component ~/Library/Audio/Plug-Ins/VST3/SnareStack.vst3; do
+            codesign --force --deep --sign - "$b"
+          done
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 2
+          auval -a | grep -i snarestack
+          auval -v aufx Sstk Snst
+
+      - name: Validate with pluginval
+        continue-on-error: true
+        run: |
+          curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+          unzip -q pluginval.zip
+          ./pluginval.app/Contents/MacOS/pluginval --strictness-level 5 --skip-gui-tests --validate ~/Library/Audio/Plug-Ins/VST3/SnareStack.vst3
+          ./pluginval.app/Contents/MacOS/pluginval --strictness-level 5 --skip-gui-tests --validate ~/Library/Audio/Plug-Ins/Components/SnareStack.component
+
+      - name: Make the installer
+        run: |
+          VERSION=$(grep -m1 -oE 'VERSION [0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | cut -d' ' -f2)
+          chmod +x packaging/make_installer.sh packaging/scripts/postinstall
+          ls build/SnareStack_artefacts/Release
+          if ! bash packaging/make_installer.sh build/SnareStack_artefacts/Release dist "$VERSION" > installer.log 2>&1; then
+            cat installer.log
+            echo "::error title=Installer failed::$(tail -n 5 installer.log | tr '\n' ' ')"
+            exit 1
+          fi
+          cat installer.log
+          A=build/SnareStack_artefacts/Release
+          mkdir -p dist/plugins
+          cp -R "$A/AU/SnareStack.component" "$A/VST3/SnareStack.vst3" dist/plugins/
+          for b in dist/plugins/*; do codesign --force --deep --sign - "$b"; done
+          (cd dist && zip -qry "SnareStack-$VERSION-mac-plugins.zip" plugins && rm -rf plugins)
+          cp README.md dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SnareStack-mac
+          path: dist
+
+      - name: Publish a release (when you push a tag like v0.1.0)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

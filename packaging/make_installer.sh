@@ -31,7 +31,8 @@ find "$STAGE" -maxdepth 4 \( -name "*.component" -o -name "*.vst3" -o -name "*.a
 pkgbuild --analyze --root "$STAGE" "$STAGE.plist"
 i=0
 while /usr/libexec/PlistBuddy -c "Print :$i" "$STAGE.plist" >/dev/null 2>&1; do
-    /usr/libexec/PlistBuddy -c "Set :$i:BundleIsRelocatable false" "$STAGE.plist"
+    /usr/libexec/PlistBuddy -c "Delete :$i:BundleIsRelocatable" "$STAGE.plist" >/dev/null 2>&1 || true
+    /usr/libexec/PlistBuddy -c "Add :$i:BundleIsRelocatable bool false" "$STAGE.plist"
     i=$((i + 1))
 done
 
